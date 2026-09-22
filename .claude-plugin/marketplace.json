@@ -9,7 +9,7 @@
       "name": "pii-guard",
       "displayName": "PII Guard",
       "description": "Blocks prompts containing credentials or personal data before they reach the model.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "source": "./"
     }
   ]

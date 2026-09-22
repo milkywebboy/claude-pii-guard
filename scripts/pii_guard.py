@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 HOME = os.path.expanduser("~")
 PLUGIN_ROOT = os.environ.get(
     "CLAUDE_PLUGIN_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +57,8 @@ BUILTIN_CONFIG = {
         r"^(noreply|no-reply)@",
         r"^(foo|bar|hoge|fuga|test|dummy|sample)@",
     ],
+    # 各自が追加する検出ルール（README「独自ルールを追加する」参照）
+    "custom_rules": [],
     "save_blocked_prompt": True,
     "copy_masked_to_clipboard": True,
     "retention_days": 7,
@@ -79,6 +81,8 @@ LABELS = {
 
 
 def label(rule):
+    if rule in CUSTOM_LABELS:
+        return CUSTOM_LABELS[rule]
     ja, en = LABELS.get(rule, (rule, rule))
     return ja if lang() == "ja" else en
 
@@ -96,6 +100,18 @@ def _merge(base, overlay):
             merged = dict(out[k])
             merged.update(v)
             out[k] = merged
+        elif k == "custom_rules" and isinstance(v, list):
+            # Rules accumulate across layers: a project rule adds to the
+            # engineer's personal rules instead of replacing them. An id
+            # defined twice takes the higher layer's definition.
+            by_id, order = {}, []
+            for rule in list(out.get(k) or []) + v:
+                if not isinstance(rule, dict) or not rule.get("id"):
+                    continue
+                if rule["id"] not in by_id:
+                    order.append(rule["id"])
+                by_id[rule["id"]] = rule
+            out[k] = [by_id[i] for i in order]
         else:
             out[k] = v
     return out
@@ -148,10 +164,36 @@ PHONE_RE = re.compile(r"(?<![0-9\-+])(?:\+81[ \-]?\d{1,4}|0\d{1,4})[ \-]?\d{1,4}
 DIGITS12_RE = re.compile(r"(?<![0-9])\d{4}[ \-]?\d{4}[ \-]?\d{4}(?![0-9])")
 CARD_RE = re.compile(r"(?<![0-9\-])(?:\d[ \-]?){12,18}\d(?![0-9\-])")
 POSTAL_RE = re.compile(r"〒\s*[0-9０-９]{3}[\-‐ー－−]?[0-9０-９]{4}")
+# 番地部分。"1-2-3" / "1丁目2番3号" / "2丁目4-9" のいずれにも当たる。
+_BANCHI = (r"[0-9０-９]{1,4}(?:(?:[\-ー－−‐]|丁目|番地|番|号)[0-9０-９]{1,4}){1,3}"
+           r"(?:号室|号|番地|番)?")
+# 市区町村と番地の間に置ける文字。ひらがなを外すことで「横浜市西区の店舗1-2」の
+# ように助詞をまたぐ誤検知を落とす。
+_ADDR_MID = r"[一-鿿ァ-ヶー]"
+
+# 都道府県から始まる完全形（郡部・カタカナ地名も含む）
 ADDRESS_RE = re.compile(
-    r"[一-鿿]{2,5}[都道府県][^\n]{0,15}?[市区町村][^\n]{0,25}?"
-    r"[0-9０-９]+[\-ー－−‐丁目][0-9０-９]+(?:[\-ー－−‐番地号][0-9０-９]+)*"
+    r"[一-鿿]{2,5}[都道府県]" + _ADDR_MID + r"{0,20}[市区町村郡]"
+    + _ADDR_MID + r"{0,20}" + _BANCHI
 )
+# 都道府県を省いた日常的な表記（「渋谷区神宮前1-2-3」）
+ADDRESS_SHORT_RE = re.compile(
+    r"(?:[一-鿿ァ-ヶー]{1,10}区|[一-鿿ァ-ヶー]{2,10}[市町村])"
+    + _ADDR_MID + r"{0,20}" + _BANCHI
+)
+# 「地区1-2」のような、地名ではない語を短縮形から除く。
+NOT_A_PLACE = frozenset(["地区", "学区", "選挙区", "管区", "街区", "特別区", "区", "市場"])
+
+# 決済事業者が公開しているテスト番号。開発者が正当に貼り付けるので止めない。
+TEST_CARDS = frozenset([
+    "4242424242424242", "4111111111111111", "4012888888881881", "4000056655665556",
+    "4917610000000000", "5555555555554444", "5105105105105100", "2223003122003222",
+    "5200828282828210", "378282246310005", "371449635398431", "6011111111111117",
+    "6011000990139424", "3530111333300000", "3566002020360505", "30569309025904",
+    "38520000023237", "6200000000000005",
+])
+# フリーダイヤル・ナビダイヤル。企業の窓口番号であって個人の連絡先ではない。
+TOLLFREE_PREFIXES = ("0120", "0800", "0570")
 DIGITS7_RE = re.compile(r"(?<![0-9])\d{7}(?![0-9])")
 PASSPORT_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2}\d{7}(?![A-Z0-9])")
 CRED_KV_RE = re.compile(
@@ -183,6 +225,10 @@ def mynumber_check_ok(digits):
     """Japanese My Number (個人番号) check-digit validation."""
     if len(digits) != 12:
         return False
+    if len(set(digits)) == 1:
+        # 12桁の同一数字は重みづけ和が偶然一致するだけで、誰の番号でもない。
+        # 埋め草・ゼロ詰めレコード・ダンプに頻出する。
+        return False
     body = [int(c) for c in digits[:11]]
     total = 0
     for n in range(1, 12):
@@ -212,17 +258,23 @@ def detect(text):
         d = re.sub(r"\D", "", raw)
         if raw.startswith("+81"):
             d = "0" + d[2:]
+        if d.startswith(TOLLFREE_PREFIXES):
+            continue  # 企業の窓口番号は個人の連絡先ではない
         if len(d) in (10, 11) and d.startswith("0"):
             found.append((m.start(), m.end(), "phone"))
 
     has_mynum_kw = bool(MYNUM_KEYWORD_RE.search(text))
     for m in DIGITS12_RE.finditer(text):
         d = re.sub(r"\D", "", m.group(0))
+        if len(set(d)) == 1:
+            continue  # 111111111111 のような埋め草はキーワードがあっても番号ではない
         if has_mynum_kw or mynumber_check_ok(d):
             found.append((m.start(), m.end(), "my_number"))
 
     for m in CARD_RE.finditer(text):
         d = re.sub(r"\D", "", m.group(0))
+        if d in TEST_CARDS:
+            continue  # 決済事業者の公開テスト番号は正当な貼り付け
         if len(d) in (13, 14, 15, 16, 19) and d[0] in "23456" and luhn_ok(d):
             found.append((m.start(), m.end(), "credit_card"))
 
@@ -232,6 +284,11 @@ def detect(text):
     for m in ADDRESS_RE.finditer(text):
         found.append((m.start(), m.end(), "address"))
 
+    for m in ADDRESS_SHORT_RE.finditer(text):
+        head = re.split(r"[市区町村]", m.group(0))[0] + m.group(0)[len(re.split(r"[市区町村]", m.group(0))[0])]
+        if head not in NOT_A_PLACE:
+            found.append((m.start(), m.end(), "address"))
+
     if BANK_KEYWORD_RE.search(text):
         for m in DIGITS7_RE.finditer(text):
             found.append((m.start(), m.end(), "bank_account"))
@@ -240,6 +297,86 @@ def detect(text):
         for m in PASSPORT_RE.finditer(text):
             found.append((m.start(), m.end(), "passport"))
 
+    return found
+
+
+# --------------------------------------------------------- custom rules
+
+# Validators a custom rule can name in "validate". They receive the digits of
+# the match, so a rule can demand a checksum instead of trusting its regex.
+VALIDATORS = {
+    "luhn": luhn_ok,
+    "mynumber": mynumber_check_ok,
+}
+
+# id -> display label, filled in by compile_custom_rules().
+CUSTOM_LABELS = {}
+
+_FLAG_CHARS = {"i": re.I, "m": re.M, "s": re.S, "x": re.X}
+
+
+def compile_custom_rules(cfg):
+    """Turn the custom_rules config into compiled matchers.
+
+    A bad rule is reported and skipped; it never takes the guard down with it,
+    because one engineer's typo must not stop everyone else's prompts.
+    """
+    compiled = []
+    for spec in cfg.get("custom_rules") or []:
+        if not isinstance(spec, dict):
+            sys.stderr.write("PII Guard: custom rule must be an object, got {!r}\n".format(spec))
+            continue
+        rid, pattern = spec.get("id"), spec.get("pattern")
+        if not rid or not pattern:
+            sys.stderr.write("PII Guard: custom rule needs both 'id' and 'pattern': "
+                             "{!r}\n".format(spec))
+            continue
+        flags = 0
+        for ch in str(spec.get("flags", "")):
+            if ch in _FLAG_CHARS:
+                flags |= _FLAG_CHARS[ch]
+            else:
+                sys.stderr.write("PII Guard: rule {!r}: unknown flag {!r} "
+                                 "(use i/m/s/x)\n".format(rid, ch))
+        try:
+            rx = re.compile(pattern, flags)
+        except re.error as exc:
+            sys.stderr.write("PII Guard: rule {!r} has an invalid pattern: {}\n".format(rid, exc))
+            continue
+
+        req_rx = None
+        if spec.get("requires"):
+            try:
+                req_rx = re.compile(spec["requires"])
+            except re.error as exc:
+                sys.stderr.write("PII Guard: rule {!r} has an invalid 'requires': "
+                                 "{}\n".format(rid, exc))
+                continue
+
+        validator = None
+        if spec.get("validate"):
+            validator = VALIDATORS.get(spec["validate"])
+            if validator is None:
+                sys.stderr.write("PII Guard: rule {!r}: unknown validator {!r} (available: {})"
+                                 "\n".format(rid, spec["validate"], ", ".join(sorted(VALIDATORS))))
+                continue
+
+        compiled.append({"id": rid, "pattern": rx, "requires": req_rx, "validate": validator})
+        CUSTOM_LABELS[rid] = spec.get("label") or rid
+        cfg.setdefault("rules", {}).setdefault(rid, spec.get("severity", "block"))
+    return compiled
+
+
+def detect_custom(text, rules):
+    found = []
+    for rule in rules:
+        if rule["requires"] is not None and not rule["requires"].search(text):
+            continue
+        for m in rule["pattern"].finditer(text):
+            if rule["validate"] is not None:
+                if not rule["validate"](re.sub(r"\D", "", m.group(0))):
+                    continue
+            found.append((m.start(), m.end(), rule["id"]))
     return found
 
 
@@ -274,7 +411,8 @@ def apply_policy(text, found, cfg):
 
 
 def scan(text, cfg):
-    return apply_policy(text, detect(text), cfg)
+    found = detect(text) + detect_custom(text, compile_custom_rules(cfg))
+    return apply_policy(text, found, cfg)
 
 
 # ------------------------------------------------------------------ output
@@ -456,9 +594,12 @@ def run_selftest():
     path = os.path.join(PLUGIN_ROOT, "tests", "cases.json")
     with open(path, "r", encoding="utf-8") as f:
         cases = json.load(f)
-    cfg = load_config()
     failures = 0
     for case in cases:
+        # 個人設定・プロジェクト設定に左右されないよう、組み込み設定から組み立てる。
+        cfg = json.loads(json.dumps(BUILTIN_CONFIG))
+        if case.get("config"):
+            cfg = _merge(cfg, case["config"])
         findings = scan(expand_fixtures(case["text"]), cfg)
         rules = sorted(set(r for _, _, r in findings))
         expected = sorted(case["expect"])
@@ -473,12 +614,69 @@ def run_selftest():
     return 1 if failures else 0
 
 
+def run_rules():
+    cfg = load_config()
+    custom = compile_custom_rules(cfg)
+    rules = cfg.get("rules", {})
+
+    print("設定ファイル（下にあるものほど優先）:")
+    for path in config_paths():
+        mark = "✓" if os.path.isfile(path) else "-"
+        print("  {} {}".format(mark, path.replace(HOME, "~")))
+
+    print("\n組み込みルール:")
+    for rid in sorted(LABELS):
+        print("  {:<6} {:<14} {}".format(rules.get(rid, "block"), rid, label(rid)))
+
+    print("\n独自ルール: {}".format(len(custom) or "なし"))
+    for rule in custom:
+        rid = rule["id"]
+        extra = []
+        if rule["requires"] is not None:
+            extra.append("requires=" + rule["requires"].pattern)
+        if rule["validate"] is not None:
+            extra.append("validate")
+        print("  {:<6} {:<14} {}  /{}/{}".format(
+            rules.get(rid, "block"), rid, label(rid), rule["pattern"].pattern,
+            ("  " + " ".join(extra)) if extra else ""))
+    return 0
+
+
+def run_test_rule(pattern, sample):
+    """Author a rule against a sample before putting it in the config."""
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        print("正規表現が不正です: {}".format(exc))
+        return 1
+    matches = list(rx.finditer(sample))
+    if not matches:
+        print("一致なし。pattern={!r}".format(pattern))
+        return 1
+    for m in matches:
+        print("  [{}:{}] {!r}  → 表示例 {}".format(
+            m.start(), m.end(), m.group(0), hint(m.group(0))))
+    print("\n{} 件一致。設定に追加するには:".format(len(matches)))
+    print(json.dumps({"custom_rules": [{"id": "my_rule", "label": "独自ルール",
+                                        "pattern": pattern, "severity": "block"}]},
+                     ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv):
     if "--version" in argv:
         print("pii-guard " + VERSION)
         return 0
     if "--selftest" in argv:
         return run_selftest()
+    if "--rules" in argv:
+        return run_rules()
+    if "--test-rule" in argv:
+        i = argv.index("--test-rule")
+        if len(argv) < i + 3:
+            print("使い方: pii_guard.py --test-rule '<正規表現>' '<テスト文字列>'")
+            return 1
+        return run_test_rule(argv[i + 1], argv[i + 2])
     if "--scan" in argv:
         text = argv[argv.index("--scan") + 1]
         cfg = load_config()

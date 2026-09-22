@@ -1,7 +1,7 @@
 {
   "name": "pii-guard",
   "displayName": "PII Guard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Blocks prompts containing credentials or personal data before they are sent to the model. Runs entirely on your machine.",
   "author": {
     "name": "milkywebboy",
