@@ -24,12 +24,34 @@ PII Guard は `UserPromptSubmit` フックとして動き、**送信前に**プ�
 
 ## インストール
 
-```
-/plugin marketplace add milkywebboy/claude-pii-guard
-/plugin install pii-guard@claude-pii-guard
+```bash
+claude plugin marketplace add milkywebboy/claude-pii-guard
+claude plugin install pii-guard@claude-pii-guard
 ```
 
-Python 3.8 以上が必要です（macOS / Linux には標準で入っています）。
+対話セッション内からは `/plugin marketplace add milkywebboy/claude-pii-guard` でも同じです。
+**インストール後、Claude Code の再起動が必要です。**
+
+効いているかの確認:
+
+```bash
+claude -p "連絡先は 090-1234-5678 です"
+```
+
+`🛑 個人情報の可能性があるため、Claude への送信を止めました` と出れば成功です。
+
+### 動作環境
+
+- **Claude Code v2.1.30 以降**（`UserPromptSubmit` フック対応版）
+- **Python 3.8 以降**（macOS と多くの Linux には標準で入っています）
+- macOS / Linux で検証済み。Windows は未検証です（`python3` の解決とクリップボード連携が未確認）
+
+### インストールする前に
+
+これは**あなたが打つ全てのプロンプトを読むフック**です。他人の作ったそういうものを、中身を見ずに入れるべきではありません。
+
+[`scripts/pii_guard.py`](scripts/pii_guard.py) がその全てです。依存ゼロの 1 ファイル、498 行。
+ネットワーク通信は一切ありません（`import` に `urllib` も `requests` もないことを確認できます）。
 
 ## 検出するもの
 
