@@ -1,5 +1,7 @@
 # PII Guard
 
+[![selftest](https://github.com/milkywebboy/claude-pii-guard/actions/workflows/test.yml/badge.svg)](https://github.com/milkywebboy/claude-pii-guard/actions/workflows/test.yml)
+
 **Claude Code に送る前に、個人情報と認証情報をローカルで止めるプラグイン。**
 
 コーディングエージェントに打つプロンプトは、そのままリモートのモデルに送られます。
