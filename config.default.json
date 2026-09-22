@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "bypass_marker": "#pii-ok",
+  "rules": {
+    "private_key": "block",
+    "api_key": "block",
+    "jwt": "block",
+    "password": "block",
+    "credit_card": "block",
+    "my_number": "block",
+    "bank_account": "block",
+    "passport": "block",
+    "email": "block",
+    "phone": "block",
+    "postal": "block",
+    "address": "block"
+  },
+  "allow_patterns": [
+    "@(example|test|invalid|localhost)\\.",
+    "^(noreply|no-reply)@",
+    "^(foo|bar|hoge|fuga|test|dummy|sample)@"
+  ],
+  "save_blocked_prompt": true,
+  "copy_masked_to_clipboard": true,
+  "retention_days": 7
+}

@@ -1,0 +1,20 @@
+{
+  "name": "pii-guard",
+  "displayName": "PII Guard",
+  "version": "0.1.0",
+  "description": "Blocks prompts containing credentials or personal data before they are sent to the model. Runs entirely on your machine.",
+  "author": {
+    "name": "milkywebboy",
+    "url": "https://github.com/milkywebboy"
+  },
+  "repository": "https://github.com/milkywebboy/claude-pii-guard",
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "privacy",
+    "dlp",
+    "pii",
+    "hooks"
+  ],
+  "hooks": "./hooks/hooks.json"
+}

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/pii_guard.py\"",
+            "timeout": 10,
+            "statusMessage": "Screening prompt for sensitive data..."
+          }
+        ]
+      }
+    ]
+  }
+}
