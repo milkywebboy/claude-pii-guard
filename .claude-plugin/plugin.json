@@ -15,6 +15,5 @@
     "dlp",
     "pii",
     "hooks"
-  ],
-  "hooks": "./hooks/hooks.json"
+  ]
 }
